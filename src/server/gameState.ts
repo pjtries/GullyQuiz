@@ -2,8 +2,10 @@ import { Server, Socket } from "socket.io";
 import prisma from "../lib/prisma";
 import { getPilotShopFallback } from "../lib/pilotShops";
 import { CURATED_QUESTIONS } from "../lib/curatedQuestions";
+import { getPaymentService } from "./services/paymentService";
 import {
   calculatePotBreakdown,
+  calculateSpeedPoints,
   ActiveMatchParticipant,
   PlayerScoreSummary,
   SanitizedQuestion,
@@ -36,13 +38,29 @@ interface ActiveShopSession {
   matchId: string;
   stage: ShopLobbyState["stage"];
   players: Map<string, ActiveMatchParticipant>; // socketId -> participant
+  lobbyClosesAt: Date | null;
+  lobbyTicker?: NodeJS.Timeout;
+  secondsRemaining: number;
+  getReadyTicker?: NodeJS.Timeout;
   questions: InternalQuestion[];
   currentQuestionIndex: number;
   questionStartTime: number;
   questionTimer?: NodeJS.Timeout;
   intermissionTimer?: NodeJS.Timeout;
-  countdownTimer?: NodeJS.Timeout;
-  countdownSeconds: number;
+  refundInfo?: {
+    reason: string;
+    refundedAmountPaise: number;
+    participantsRefunded: number;
+  };
+  winner?: {
+    playerId: string;
+    displayName: string;
+    score: number;
+    cumulativeResponseMs: number;
+    prizePaise: number;
+    upiId?: string;
+    payoutId?: string;
+  };
 }
 
 export class GameEngine {
@@ -121,10 +139,11 @@ export class GameEngine {
       matchId: activeMatchId,
       stage: "WAITING_FOR_PLAYERS",
       players: new Map(),
+      lobbyClosesAt: null,
+      secondsRemaining: 60,
       questions: [],
       currentQuestionIndex: -1,
       questionStartTime: 0,
-      countdownSeconds: 0,
     };
 
     this.sessions.set(cleanShopCode, session);
@@ -133,11 +152,13 @@ export class GameEngine {
 
   public getLobbySnapshot(session: ActiveShopSession): ShopLobbyState {
     const playersList = Array.from(session.players.values());
-    const pot = calculatePotBreakdown(playersList.length, 1000);
+    const playerCount = playersList.length;
+    const pot = calculatePotBreakdown(playerCount, 1000);
+    const currentPrizePoolPaise = pot.winnerPrizePoolPaise;
 
     let activeQuestion: SanitizedQuestion | undefined = undefined;
     if (
-      session.stage === "QUESTION_ACTIVE" &&
+      (session.stage === "QUESTION_ACTIVE" || session.stage === "QUESTION_INTERMISSION") &&
       session.currentQuestionIndex >= 0 &&
       session.currentQuestionIndex < session.questions.length
     ) {
@@ -160,24 +181,43 @@ export class GameEngine {
       pinExpiresAt: session.pinExpiresAt.toISOString(),
       entryFeePaise: 1000,
       players: playersList,
+      playerCount,
+      currentPrizePoolPaise,
+      secondsRemaining: session.secondsRemaining,
+      lobbyClosesAt: session.lobbyClosesAt ? session.lobbyClosesAt.toISOString() : null,
       currentQuestionIndex: session.currentQuestionIndex,
-      totalQuestions: session.questions.length || 5,
-      countdownSeconds: session.countdownSeconds,
+      totalQuestions: session.questions.length || 9,
       activeQuestion,
       pot,
+      refundInfo: session.refundInfo,
+      winner: session.winner,
     };
   }
 
   public broadcastLobbyState(session: ActiveShopSession) {
     const snapshot = this.getLobbySnapshot(session);
+    this.io.to(session.shopCode).emit("match:lobby_update", snapshot);
     this.io.to(session.shopCode).emit("lobby_state_update", snapshot);
   }
 
+  /**
+   * 1. Matchmaking Lobby: Scoped per shopId.
+   * When Player 1 pays and joins, open new Match with 60s countdown timer.
+   * Cap Rule: Max 10 players.
+   * Min Rule: If <4 players after 60s, CANCELLED_REFUNDED.
+   */
   public async handleJoinLobby(
     socket: AppSocket,
-    payload: { shopCode: string; pin: string; phone: string; displayName: string }
+    payload: {
+      shopCode: string;
+      pin: string;
+      phone: string;
+      displayName: string;
+      upiId?: string;
+      paymentOrderId?: string;
+    }
   ) {
-    const { shopCode, pin, phone, displayName } = payload;
+    const { shopCode, pin, phone, displayName, upiId, paymentOrderId } = payload;
     const cleanShopCode = shopCode.trim().toUpperCase();
 
     let shop: {
@@ -225,33 +265,6 @@ export class GameEngine {
       return;
     }
 
-    // Find or create Player in DB
-    let player = {
-      id: `player_${phone.replace(/\D/g, "")}`,
-      displayName: displayName || "GullyPlayer",
-      phone,
-    };
-
-    try {
-      const dbPlayer = await prisma.player.upsert({
-        where: { phone },
-        update: { displayName },
-        create: {
-          phone,
-          displayName: displayName || "GullyPlayer",
-          totalMatches: 0,
-          totalWinningsPaise: 0,
-        },
-      });
-      player = {
-        id: dbPlayer.id,
-        displayName: dbPlayer.displayName,
-        phone: dbPlayer.phone,
-      };
-    } catch (e) {
-      console.warn("DB player upsert skipped:", e);
-    }
-
     const session = await this.getOrCreateSession(cleanShopCode);
     if (!session) {
       socket.emit("error_message", {
@@ -261,18 +274,66 @@ export class GameEngine {
       return;
     }
 
-    if (session.stage !== "WAITING_FOR_PLAYERS" && session.stage !== "LOBBY_COUNTDOWN") {
+    // Cap Rule: Maximum 10 players per lobby
+    if (session.players.size >= 10) {
       socket.emit("error_message", {
-        code: "MATCH_IN_PROGRESS",
-        message: "A match is currently in progress. Please wait for the next round!",
+        code: "LOBBY_FULL",
+        message: "Match lobby has reached maximum 10-player capacity. Please wait for the next 90s round!",
       });
       return;
+    }
+
+    if (
+      session.stage !== "WAITING_FOR_PLAYERS" &&
+      session.stage !== "LOBBY_OPEN" &&
+      session.stage !== "LOBBY_COUNTDOWN"
+    ) {
+      socket.emit("error_message", {
+        code: "MATCH_IN_PROGRESS",
+        message: "A speed match is currently in progress. Please wait for the next round!",
+      });
+      return;
+    }
+
+    // Find or create Player in DB
+    let player = {
+      id: `player_${phone.replace(/\D/g, "")}`,
+      displayName: displayName || "GullyPlayer",
+      phone,
+      upiId: upiId || `${phone}@upi`,
+    };
+
+    try {
+      const dbPlayer = await prisma.player.upsert({
+        where: { phone },
+        update: {
+          displayName,
+          upiId: upiId || undefined,
+        },
+        create: {
+          phone,
+          displayName: displayName || "GullyPlayer",
+          upiId: upiId || `${phone}@upi`,
+          totalMatches: 0,
+          totalWinningsPaise: 0,
+        },
+      });
+      player = {
+        id: dbPlayer.id,
+        displayName: dbPlayer.displayName,
+        phone: dbPlayer.phone,
+        upiId: dbPlayer.upiId || `${phone}@upi`,
+      };
+    } catch (e) {
+      console.warn("DB player upsert skipped:", e);
     }
 
     // Join Socket.io room
     socket.join(cleanShopCode);
     socket.data.playerId = player.id;
     socket.data.displayName = player.displayName;
+    socket.data.phone = player.phone;
+    socket.data.upiId = player.upiId;
     socket.data.shopCode = cleanShopCode;
 
     // Register participant
@@ -281,6 +342,8 @@ export class GameEngine {
       socketId: socket.id,
       displayName: player.displayName,
       phone: player.phone,
+      upiId: player.upiId,
+      paymentOrderId,
       score: 0,
       cumulativeResponseMs: 0,
       answers: [],
@@ -299,11 +362,13 @@ export class GameEngine {
         },
         update: {
           paymentStatus: "PAID",
+          paymentOrderId,
         },
         create: {
           matchId: session.matchId,
           playerId: player.id,
           paymentStatus: "PAID",
+          paymentOrderId,
         },
       });
     } catch (e) {
@@ -311,42 +376,193 @@ export class GameEngine {
     }
 
     console.log(
-      `[GameEngine] Player "${player.displayName}" joined lobby for shop ${cleanShopCode}. Total: ${session.players.size}`
+      `[GameEngine] Player "${player.displayName}" joined lobby for shop ${cleanShopCode}. Total: ${session.players.size}/10`
     );
 
-    this.broadcastLobbyState(session);
+    // When Player 1 pays and joins: open new Match with 60-second countdown timer
+    if (session.players.size === 1 && session.stage === "WAITING_FOR_PLAYERS") {
+      this.start60SecondLobby(session);
+    } else {
+      this.broadcastLobbyState(session);
+    }
 
-    // Auto-start countdown if 2 or more players join
-    if (session.players.size >= 2 && session.stage === "WAITING_FOR_PLAYERS") {
-      this.startLobbyCountdown(session);
+    // Cap Rule: If 10 players join before 60 seconds, lock immediately and start 5-second countdown!
+    if (session.players.size >= 10) {
+      console.log(`[GameEngine] 10-player cap reached for shop ${cleanShopCode}! Locking lobby.`);
+      if (session.lobbyTicker) {
+        clearInterval(session.lobbyTicker);
+        session.lobbyTicker = undefined;
+      }
+      this.startGetReadyCountdown(session);
     }
   }
 
-  public startLobbyCountdown(session: ActiveShopSession) {
-    if (session.countdownTimer) {
-      clearInterval(session.countdownTimer);
+  /**
+   * Starts the 60-second countdown for the matchmaking lobby.
+   */
+  public start60SecondLobby(session: ActiveShopSession) {
+    if (session.lobbyTicker) {
+      clearInterval(session.lobbyTicker);
     }
 
-    session.stage = "LOBBY_COUNTDOWN";
-    session.countdownSeconds = 5; // 5-second countdown to prepare players
+    session.stage = "LOBBY_OPEN";
+    session.secondsRemaining = 60;
+    session.lobbyClosesAt = new Date(Date.now() + 60000);
+
+    // Update match record with lobbyClosesAt
+    prisma.match
+      .update({
+        where: { id: session.matchId },
+        data: {
+          status: "LOBBY_OPEN",
+          lobbyClosesAt: session.lobbyClosesAt,
+        },
+      })
+      .catch((e) => console.warn("Match lobbyClosesAt update skipped:", e));
 
     this.broadcastLobbyState(session);
 
-    session.countdownTimer = setInterval(async () => {
-      session.countdownSeconds -= 1;
+    session.lobbyTicker = setInterval(async () => {
+      session.secondsRemaining -= 1;
+      this.broadcastLobbyState(session);
 
-      this.io.to(session.shopCode).emit("match_countdown", {
-        secondsRemaining: session.countdownSeconds,
+      if (session.secondsRemaining <= 0) {
+        if (session.lobbyTicker) {
+          clearInterval(session.lobbyTicker);
+          session.lobbyTicker = undefined;
+        }
+
+        const playerCount = session.players.size;
+        console.log(
+          `[GameEngine] 60-second lobby expired for ${session.shopCode}. Player count: ${playerCount}`
+        );
+
+        // Minimum Player & Refund Rule:
+        // If playerCount < 4: CANCELLED_REFUNDED and refund ₹10 to every participant
+        if (playerCount < 4) {
+          await this.handleLobbyCancellation(session);
+        } else {
+          // If playerCount >= 4: Lock lobby and start match!
+          this.startGetReadyCountdown(session);
+        }
+      }
+    }, 1000);
+  }
+
+  /**
+   * Handles lobby cancellation when < 4 players joined within 60s.
+   * Calls paymentService.refundParticipant() for every participant and emits match:cancelled_refunded.
+   */
+  public async handleLobbyCancellation(session: ActiveShopSession) {
+    session.stage = "CANCELLED_REFUNDED";
+    const paymentService = getPaymentService();
+    const participantsList = Array.from(session.players.values());
+
+    console.log(
+      `[GameEngine] ⚠️ Cancelling match ${session.matchId}: <4 players joined (${participantsList.length}). Initiating ₹10 refunds.`
+    );
+
+    // Process refunds for every participant
+    for (const p of participantsList) {
+      await paymentService.refundParticipant({
+        paymentOrderId: p.paymentOrderId,
+        playerId: p.playerId,
+        phone: p.phone,
+        upiId: p.upiId,
+        amountPaise: 1000,
+        reason: "GullyQuiz lobby cancelled: minimum 4 players required",
       });
 
-      if (session.countdownSeconds <= 0) {
-        if (session.countdownTimer) clearInterval(session.countdownTimer);
-        session.countdownTimer = undefined;
+      // Update participant in DB if available
+      prisma.matchParticipant
+        .update({
+          where: {
+            matchId_playerId: {
+              matchId: session.matchId,
+              playerId: p.playerId,
+            },
+          },
+          data: { paymentStatus: "REFUNDED" },
+        })
+        .catch(() => {});
+    }
+
+    // Update match status to CANCELLED_REFUNDED
+    prisma.match
+      .update({
+        where: { id: session.matchId },
+        data: {
+          status: "CANCELLED_REFUNDED",
+          endedAt: new Date(),
+        },
+      })
+      .catch(() => {});
+
+    session.refundInfo = {
+      reason: "Minimum 4 players required for speed arena. Your ₹10 entry has been refunded.",
+      refundedAmountPaise: 1000,
+      participantsRefunded: participantsList.length,
+    };
+
+    // Emit event to inform clients their ₹10 was refunded
+    this.io.to(session.shopCode).emit("match:cancelled_refunded", {
+      matchId: session.matchId,
+      reason: "Minimum 4 players required. Your ₹10 entry has been automatically refunded to your UPI account.",
+      refundedAmountPaise: 1000,
+      participantsRefunded: participantsList.length,
+    });
+
+    this.broadcastLobbyState(session);
+
+    // Reopen fresh lobby after 8 seconds
+    setTimeout(async () => {
+      this.sessions.delete(session.shopCode);
+      const newSession = await this.getOrCreateSession(session.shopCode);
+      if (newSession) {
+        this.broadcastLobbyState(newSession);
+      }
+    }, 8000);
+  }
+
+  /**
+   * 5-Second "Get Ready" countdown before 90-second speed quiz starts.
+   */
+  public startGetReadyCountdown(session: ActiveShopSession) {
+    if (session.getReadyTicker) {
+      clearInterval(session.getReadyTicker);
+    }
+
+    session.stage = "GET_READY";
+    let readySeconds = 5;
+    session.secondsRemaining = readySeconds;
+
+    this.io.to(session.shopCode).emit("match:get_ready", { secondsRemaining: readySeconds });
+    this.io.to(session.shopCode).emit("match_countdown", { secondsRemaining: readySeconds });
+    this.broadcastLobbyState(session);
+
+    session.getReadyTicker = setInterval(async () => {
+      readySeconds -= 1;
+      session.secondsRemaining = readySeconds;
+
+      this.io.to(session.shopCode).emit("match:get_ready", { secondsRemaining: readySeconds });
+      this.io.to(session.shopCode).emit("match_countdown", { secondsRemaining: readySeconds });
+      this.broadcastLobbyState(session);
+
+      if (readySeconds <= 0) {
+        if (session.getReadyTicker) {
+          clearInterval(session.getReadyTicker);
+          session.getReadyTicker = undefined;
+        }
         await this.startMatch(session);
       }
     }, 1000);
   }
 
+  /**
+   * 2. 90-Second Synchronous Quiz (IN_PROGRESS):
+   * Selects 9 random active questions. Broadcasts 1 question every 10 seconds.
+   * 9 questions * 10 seconds = 90 seconds total!
+   */
   public async startMatch(session: ActiveShopSession) {
     if (session.players.size === 0) {
       session.stage = "WAITING_FOR_PLAYERS";
@@ -354,12 +570,14 @@ export class GameEngine {
       return;
     }
 
-    console.log(`[GameEngine] Starting match ${session.matchId} for shop ${session.shopCode}`);
+    console.log(
+      `[GameEngine] Starting 90-second synchronous speed quiz for match ${session.matchId} (${session.shopCode}) with ${session.players.size} players`
+    );
 
-    // Update match status in DB to IN_PROGRESS
     const playerCount = session.players.size;
     const pot = calculatePotBreakdown(playerCount, 1000);
 
+    // Update match status in DB
     try {
       await prisma.match.update({
         where: { id: session.matchId },
@@ -376,16 +594,16 @@ export class GameEngine {
       console.warn("DB match status update skipped:", e);
     }
 
-    // Fetch 5 random active questions from DB or fallback
+    // Select 9 random active questions from PostgreSQL (or curated questions)
     let fetchedQuestions: InternalQuestion[] = [];
     try {
       const dbQuestions = await prisma.question.findMany({
         where: { isActive: true },
-        take: 20,
+        take: 30,
       });
 
-      if (dbQuestions && dbQuestions.length > 0) {
-        const shuffled = dbQuestions.sort(() => 0.5 - Math.random()).slice(0, 5);
+      if (dbQuestions && dbQuestions.length >= 9) {
+        const shuffled = dbQuestions.sort(() => 0.5 - Math.random()).slice(0, 9);
         fetchedQuestions = shuffled.map((q) => {
           let parsedOptions: string[] = [];
           if (Array.isArray(q.options)) {
@@ -410,8 +628,10 @@ export class GameEngine {
       console.warn("DB questions fetch skipped, using curated questions:", e);
     }
 
-    if (fetchedQuestions.length === 0) {
-      fetchedQuestions = CURATED_QUESTIONS.slice(0, 5).map((q) => ({
+    if (fetchedQuestions.length < 9) {
+      // Pick 9 from curated questions
+      const shuffledCurated = [...CURATED_QUESTIONS].sort(() => 0.5 - Math.random()).slice(0, 9);
+      fetchedQuestions = shuffledCurated.map((q) => ({
         id: q.id,
         category: q.category,
         questionText: q.questionText,
@@ -428,6 +648,7 @@ export class GameEngine {
   private nextQuestion(session: ActiveShopSession) {
     session.currentQuestionIndex += 1;
 
+    // 9 questions finished: transition to COMPLETED_SETTLED
     if (session.currentQuestionIndex >= session.questions.length) {
       this.finishMatch(session);
       return;
@@ -437,6 +658,7 @@ export class GameEngine {
     session.stage = "QUESTION_ACTIVE";
     session.questionStartTime = Date.now();
 
+    // Do NOT send correctOptionIndex to client!
     const sanitized: SanitizedQuestion = {
       id: currentQ.id,
       category: currentQ.category,
@@ -445,6 +667,16 @@ export class GameEngine {
     };
 
     this.broadcastLobbyState(session);
+
+    // Broadcast 1 question every 10 seconds
+    this.io.to(session.shopCode).emit("quiz:question", {
+      questionIndex: session.currentQuestionIndex,
+      totalQuestions: session.questions.length,
+      questionText: currentQ.questionText,
+      options: currentQ.options,
+      serverTimestamp: session.questionStartTime,
+      timeLimitSeconds: 10,
+    });
 
     this.io.to(session.shopCode).emit("question_started", {
       question: sanitized,
@@ -460,6 +692,12 @@ export class GameEngine {
     }, 10000);
   }
 
+  /**
+   * Server-Authoritative Scoring (quiz:submit_answer):
+   * responseTimeMs = Date.now() - questionSentAt (clamped between 0 and 10000)
+   * If correct: points = 100 + Math.floor(50 * (1 - responseTimeMs / 10000))
+   * If wrong: 0 points
+   */
   public handleSubmitAnswer(
     socket: AppSocket,
     payload: {
@@ -482,27 +720,34 @@ export class GameEngine {
     );
     if (alreadyAnswered) return;
 
-    const elapsedMs = Math.min(10000, Math.max(50, Date.now() - session.questionStartTime));
+    const responseTimeMs = Math.min(
+      10000,
+      Math.max(0, Date.now() - session.questionStartTime)
+    );
     const currentQ = session.questions[session.currentQuestionIndex];
     const isCorrect = payload.selectedOptionIndex === currentQ.correctOptionIndex;
 
-    let pointsAwarded = 0;
-    if (isCorrect) {
-      // Speed bonus: 100 base + up to 100 speed bonus for sub-10s response
-      const speedBonus = Math.floor((10000 - elapsedMs) / 100);
-      pointsAwarded = 100 + Math.max(0, speedBonus);
-    }
+    const pointsAwarded = calculateSpeedPoints(isCorrect, responseTimeMs);
 
     participant.score += pointsAwarded;
-    participant.cumulativeResponseMs += elapsedMs;
+    participant.cumulativeResponseMs += responseTimeMs;
     participant.answers.push({
       questionIndex: payload.questionIndex,
       selectedOption: payload.selectedOptionIndex,
-      responseMs: elapsedMs,
+      responseMs: responseTimeMs,
       isCorrect,
+      points: pointsAwarded,
     });
 
-    // If all active players answered, trigger early question end
+    // Broadcast live mini-leaderboard update
+    const currentLeaderboard = this.computeLeaderboard(session);
+    this.io.to(session.shopCode).emit("quiz:leaderboard_update", {
+      questionIndex: payload.questionIndex,
+      leaderboard: currentLeaderboard,
+    });
+    this.broadcastLobbyState(session);
+
+    // If all active participants have answered, trigger early question end
     const totalAnswered = Array.from(session.players.values()).filter((p) =>
       p.answers.some((a) => a.questionIndex === payload.questionIndex)
     ).length;
@@ -524,8 +769,13 @@ export class GameEngine {
 
     session.stage = "QUESTION_INTERMISSION";
     const currentQ = session.questions[session.currentQuestionIndex];
-
     const leaderboard = this.computeLeaderboard(session);
+
+    this.io.to(session.shopCode).emit("quiz:question_ended", {
+      questionIndex: session.currentQuestionIndex,
+      correctOptionIndex: currentQ.correctOptionIndex,
+      leaderboard,
+    });
 
     this.io.to(session.shopCode).emit("question_ended", {
       questionIndex: session.currentQuestionIndex,
@@ -535,21 +785,31 @@ export class GameEngine {
 
     this.broadcastLobbyState(session);
 
-    // 3-second intermission before next question
+    // 2-second intermission between questions
     session.intermissionTimer = setTimeout(() => {
       this.nextQuestion(session);
-    }, 3000);
+    }, 2000);
   }
 
+  /**
+   * 3. Tie-Breaker:
+   * Rank players by score DESC, then fastest hand wins (cumulativeResponseMs ASC).
+   */
   private computeLeaderboard(session: ActiveShopSession): PlayerScoreSummary[] {
-    const list: PlayerScoreSummary[] = Array.from(session.players.values()).map((p) => ({
-      playerId: p.playerId,
-      displayName: p.displayName,
-      score: p.score,
-      cumulativeResponseMs: p.cumulativeResponseMs,
-    }));
+    const list: PlayerScoreSummary[] = Array.from(session.players.values()).map((p) => {
+      const lastAnswer = p.answers.find((a) => a.questionIndex === session.currentQuestionIndex);
+      return {
+        playerId: p.playerId,
+        displayName: p.displayName,
+        score: p.score,
+        cumulativeResponseMs: p.cumulativeResponseMs,
+        lastQuestionPoints: lastAnswer?.points || 0,
+        lastQuestionResponseMs: lastAnswer?.responseMs || 0,
+        upiId: p.upiId,
+      };
+    });
 
-    // Sort by highest score; break ties by lowest cumulative response time
+    // Rank players by score DESC, then cumulativeResponseMs ASC
     list.sort((a, b) => {
       if (b.score !== a.score) {
         return b.score - a.score;
@@ -563,20 +823,61 @@ export class GameEngine {
     }));
   }
 
+  /**
+   * 3. Settlement (COMPLETED_SETTLED):
+   * Financial Split:
+   * 70% Prize Pool -> paymentService.disbursePrize(winner.upiId, prizePoolPaise)
+   * 10% Vendor Commission -> Shop.unsettledBalancePaise
+   * 20% Platform Revenue
+   * Emits quiz:finished with full podium rankings, response times, and payout result.
+   */
   private async finishMatch(session: ActiveShopSession) {
-    session.stage = "MATCH_FINISHED";
+    session.stage = "COMPLETED_SETTLED";
     const leaderboard = this.computeLeaderboard(session);
     const winnerSummary = leaderboard.length > 0 ? leaderboard[0] : null;
 
     const pot = calculatePotBreakdown(session.players.size, 1000);
+    const paymentService = getPaymentService();
+
+    // Trigger instant UPI payout to winner
+    let payoutResult = {
+      success: true,
+      payoutId: `payout_sim_${Date.now()}`,
+      amountPaise: pot.winnerPrizePoolPaise,
+      upiId: winnerSummary?.upiId || "winner@upi",
+    };
+
+    if (winnerSummary && pot.winnerPrizePoolPaise > 0) {
+      const targetUpi = winnerSummary.upiId || "winner@upi";
+      try {
+        payoutResult = await paymentService.disbursePrize(targetUpi, pot.winnerPrizePoolPaise, {
+          matchId: session.matchId,
+          shopCode: session.shopCode,
+        });
+      } catch (e) {
+        console.error("[GameEngine] Payout disbursement error:", e);
+      }
+    }
+
+    if (winnerSummary) {
+      session.winner = {
+        playerId: winnerSummary.playerId,
+        displayName: winnerSummary.displayName,
+        score: winnerSummary.score,
+        cumulativeResponseMs: winnerSummary.cumulativeResponseMs,
+        prizePaise: pot.winnerPrizePoolPaise,
+        upiId: winnerSummary.upiId,
+        payoutId: payoutResult.payoutId,
+      };
+    }
 
     console.log(
-      `[GameEngine] Match ${session.matchId} finished. Winner: ${
+      `[GameEngine] Match ${session.matchId} completed. Winner: ${
         winnerSummary?.displayName || "None"
-      }`
+      } (₹${pot.winnerPrizePoolPaise / 100} UPI payout), Vendor share: ₹${pot.vendorSharePaise / 100}`
     );
 
-    // Persist final match settlement atomically via Prisma transaction
+    // Atomically persist to database
     try {
       await prisma.$transaction(async (tx) => {
         // 1. Update Match record
@@ -590,10 +891,11 @@ export class GameEngine {
             prizePoolPaise: pot.winnerPrizePoolPaise,
             vendorSharePaise: pot.vendorSharePaise,
             platformSharePaise: pot.platformSharePaise,
+            payoutReferenceId: payoutResult.payoutId,
           },
         });
 
-        // 2. Update all participants' scores & response times
+        // 2. Update participants
         for (const p of Array.from(session.players.values())) {
           await tx.matchParticipant.update({
             where: {
@@ -619,7 +921,7 @@ export class GameEngine {
           });
         }
 
-        // 3. Credit vendor unsettled balance
+        // 3. Atomically increment Shop.unsettledBalancePaise with 10% vendor commission
         await tx.shop.update({
           where: { id: session.shopId },
           data: {
@@ -628,30 +930,35 @@ export class GameEngine {
         });
       });
     } catch (err) {
-      console.error("[GameEngine] Database transaction settlement error:", err);
+      console.warn("[GameEngine] Database transaction settlement error:", err);
     }
 
-    const updatedShop = await prisma.shop.findUnique({
-      where: { id: session.shopId },
+    // Emit quiz:finished and match_completed
+    this.io.to(session.shopCode).emit("quiz:finished", {
+      winner: winnerSummary,
+      finalLeaderboard: leaderboard,
+      pot,
+      payoutResult,
+      vendorSharePaise: pot.vendorSharePaise,
     });
 
     this.io.to(session.shopCode).emit("match_completed", {
       winner: winnerSummary,
       finalLeaderboard: leaderboard,
       pot,
-      vendorBalancePaise: updatedShop?.unsettledBalancePaise || 0,
+      vendorBalancePaise: pot.vendorSharePaise,
     });
 
     this.broadcastLobbyState(session);
 
-    // Reset session for the next match after 10 seconds
+    // Reset session for the next match after 12 seconds
     setTimeout(async () => {
       this.sessions.delete(session.shopCode);
       const newSession = await this.getOrCreateSession(session.shopCode);
       if (newSession) {
         this.broadcastLobbyState(newSession);
       }
-    }, 10000);
+    }, 12000);
   }
 
   public handleDisconnect(socket: AppSocket) {
@@ -666,26 +973,44 @@ export class GameEngine {
       `[GameEngine] Player disconnected from ${shopCode}. Remaining: ${session.players.size}`
     );
 
-    if (session.stage === "WAITING_FOR_PLAYERS" || session.stage === "LOBBY_COUNTDOWN") {
-      if (session.players.size < 2 && session.countdownTimer) {
-        clearInterval(session.countdownTimer);
-        session.countdownTimer = undefined;
-        session.stage = "WAITING_FOR_PLAYERS";
-        session.countdownSeconds = 0;
-      }
+    if (session.stage === "LOBBY_OPEN" || session.stage === "WAITING_FOR_PLAYERS") {
       this.broadcastLobbyState(session);
     }
   }
 
   public async forceStartMatch(shopCode: string, pin: string): Promise<boolean> {
-    const session = await this.getOrCreateSession(shopCode);
+    const cleanShopCode = shopCode.trim().toUpperCase();
+    const session = await this.getOrCreateSession(cleanShopCode);
     if (!session) return false;
     if (session.currentPin !== pin) return false;
 
-    if (session.stage === "WAITING_FOR_PLAYERS" && session.players.size > 0) {
-      this.startLobbyCountdown(session);
+    if (
+      (session.stage === "WAITING_FOR_PLAYERS" || session.stage === "LOBBY_OPEN") &&
+      session.players.size > 0
+    ) {
+      if (session.lobbyTicker) {
+        clearInterval(session.lobbyTicker);
+        session.lobbyTicker = undefined;
+      }
+      this.startGetReadyCountdown(session);
       return true;
     }
     return false;
+  }
+
+  /**
+   * Helper to manually test the cancellation/refund rule (<4 players).
+   */
+  public async triggerTestRefund(shopCode: string) {
+    const cleanShopCode = shopCode.trim().toUpperCase();
+    const session = this.sessions.get(cleanShopCode);
+    if (!session) return;
+
+    if (session.lobbyTicker) {
+      clearInterval(session.lobbyTicker);
+      session.lobbyTicker = undefined;
+    }
+
+    await this.handleLobbyCancellation(session);
   }
 }

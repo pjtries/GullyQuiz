@@ -122,17 +122,54 @@ export default function GullyQuizPage() {
       setTimeout(() => setErrorMessage(null), 4000);
     });
 
-    socket.on("lobby_state_update", (state: ShopLobbyState) => {
+    socket.on("match:lobby_update", (state: ShopLobbyState) => {
       setLobbyState(state);
-      if (state.stage === "WAITING_FOR_PLAYERS") {
+      if (state.stage === "WAITING_FOR_PLAYERS" || state.stage === "LOBBY_OPEN") {
         setCountdownRemaining(null);
         setActiveQuestion(null);
         setCorrectOptionIndex(null);
       }
     });
 
+    socket.on("lobby_state_update", (state: ShopLobbyState) => {
+      setLobbyState(state);
+      if (state.stage === "WAITING_FOR_PLAYERS" || state.stage === "LOBBY_OPEN") {
+        setCountdownRemaining(null);
+        setActiveQuestion(null);
+        setCorrectOptionIndex(null);
+      }
+    });
+
+    socket.on("match:get_ready", (data: { secondsRemaining: number }) => {
+      setCountdownRemaining(data.secondsRemaining);
+    });
+
     socket.on("match_countdown", (data: { secondsRemaining: number }) => {
       setCountdownRemaining(data.secondsRemaining);
+    });
+
+    socket.on("match:cancelled_refunded", (data) => {
+      setErrorMessage(`Match Cancelled (<4 players). ₹10.00 refunded.`);
+      setTimeout(() => setErrorMessage(null), 5000);
+      setCountdownRemaining(null);
+      setActiveQuestion(null);
+    });
+
+    socket.on("quiz:question", (data) => {
+      setActiveQuestion({
+        id: `q-${data.questionIndex}`,
+        category: "GENERAL_KNOWLEDGE",
+        questionText: data.questionText,
+        options: data.options,
+      });
+      setQuestionIndex(data.questionIndex);
+      setTotalQuestions(data.totalQuestions || 9);
+      setQuestionStartTime(Date.now());
+      setTimerSecondsLeft(data.timeLimitSeconds);
+      setSelectedOption(null);
+      setAnswerSubmittedAt(null);
+      setCorrectOptionIndex(null);
+      setCountdownRemaining(null);
     });
 
     socket.on("question_started", (data) => {
@@ -147,9 +184,22 @@ export default function GullyQuizPage() {
       setCountdownRemaining(null);
     });
 
+    socket.on("quiz:question_ended", (data) => {
+      setCorrectOptionIndex(data.correctOptionIndex);
+      setInterimLeaderboard(data.leaderboard);
+    });
+
     socket.on("question_ended", (data) => {
       setCorrectOptionIndex(data.correctOptionIndex);
       setInterimLeaderboard(data.leaderboard);
+    });
+
+    socket.on("quiz:finished", (data) => {
+      setMatchWinner(data.winner);
+      setFinalLeaderboard(data.finalLeaderboard);
+      setSettledPot(data.pot);
+      setVendorBalance(data.vendorSharePaise);
+      setActiveQuestion(null);
     });
 
     socket.on("match_completed", (data) => {

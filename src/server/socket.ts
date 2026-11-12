@@ -45,6 +45,15 @@ export function initSocketServer(httpServer: HttpServer) {
       }
     });
 
+    socket.on("quiz:submit_answer", (payload) => {
+      try {
+        gameEngine?.handleSubmitAnswer(socket, payload);
+      } catch (err) {
+        console.error("[Socket.io] Error in quiz:submit_answer:", err);
+      }
+    });
+
+    // Alias
     socket.on("submit_answer", (payload) => {
       try {
         gameEngine?.handleSubmitAnswer(socket, payload);
@@ -57,7 +66,8 @@ export function initSocketServer(httpServer: HttpServer) {
       try {
         const session = await gameEngine?.getOrCreateSession(shopCode);
         if (session) {
-          socket.join(shopCode);
+          socket.join(shopCode.trim().toUpperCase());
+          socket.emit("match:lobby_update", gameEngine!.getLobbySnapshot(session));
           socket.emit("lobby_state_update", gameEngine!.getLobbySnapshot(session));
         }
       } catch (err) {
@@ -70,6 +80,14 @@ export function initSocketServer(httpServer: HttpServer) {
         await gameEngine?.forceStartMatch(shopCode, pin);
       } catch (err) {
         console.error("[Socket.io] Error in force_start_match:", err);
+      }
+    });
+
+    socket.on("trigger_test_refund", async ({ shopCode }) => {
+      try {
+        await gameEngine?.triggerTestRefund(shopCode);
+      } catch (err) {
+        console.error("[Socket.io] Error in trigger_test_refund:", err);
       }
     });
 

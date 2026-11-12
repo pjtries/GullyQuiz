@@ -6,19 +6,19 @@ export interface PotBreakdown {
 }
 
 /**
- * Calculates zero-CapEx revenue splits:
- * 70% to Match Winner
- * 20% to Shop Owner (Vendor)
- * 10% to Platform Infrastructure
+ * Phase 3 Financial Split:
+ * 70% to Match Winner (Prize Pool)
+ * 10% to Shop Owner (Vendor Commission)
+ * 20% to Platform Infrastructure
  */
 export function calculatePotBreakdown(
   playerCount: number,
   entryFeePaise: number = 1000
 ): PotBreakdown {
   const totalPotPaise = playerCount * entryFeePaise;
-  const winnerPrizePoolPaise = Math.floor((totalPotPaise * 70) / 100);
-  const vendorSharePaise = Math.floor((totalPotPaise * 20) / 100);
-  const platformSharePaise = totalPotPaise - winnerPrizePoolPaise - vendorSharePaise;
+  const winnerPrizePoolPaise = Math.floor((totalPotPaise * 70) / 100); // 70%
+  const vendorSharePaise = Math.floor((totalPotPaise * 10) / 100);     // 10%
+  const platformSharePaise = totalPotPaise - winnerPrizePoolPaise - vendorSharePaise; // 20%
 
   return {
     totalPotPaise,
@@ -26,6 +26,18 @@ export function calculatePotBreakdown(
     vendorSharePaise,
     platformSharePaise,
   };
+}
+
+/**
+ * Server-Authoritative Question Scoring Formula:
+ * If correct: points = 100 + Math.floor(50 * (1 - responseTimeMs / 10000))
+ * If wrong: 0 points
+ */
+export function calculateSpeedPoints(isCorrect: boolean, responseTimeMs: number): number {
+  if (!isCorrect) return 0;
+  const clampedMs = Math.min(10000, Math.max(0, responseTimeMs));
+  const speedBonus = Math.floor(50 * (1 - clampedMs / 10000));
+  return 100 + Math.max(0, speedBonus);
 }
 
 /**
@@ -56,6 +68,9 @@ export interface PlayerScoreSummary {
   score: number;
   cumulativeResponseMs: number;
   rank?: number;
+  lastQuestionPoints?: number;
+  lastQuestionResponseMs?: number;
+  upiId?: string;
 }
 
 export interface ActiveMatchParticipant {
@@ -63,6 +78,8 @@ export interface ActiveMatchParticipant {
   socketId: string;
   displayName: string;
   phone: string;
+  upiId?: string;
+  paymentOrderId?: string;
   score: number;
   cumulativeResponseMs: number;
   lastAnswerTimestamp?: number;
@@ -71,15 +88,21 @@ export interface ActiveMatchParticipant {
     selectedOption: number;
     responseMs: number;
     isCorrect: boolean;
+    points: number;
   }[];
 }
 
 export type MatchStage =
   | "WAITING_FOR_PLAYERS"
+  | "LOBBY_OPEN"
   | "LOBBY_COUNTDOWN"
+  | "GET_READY"
+  | "IN_PROGRESS"
   | "QUESTION_ACTIVE"
   | "QUESTION_INTERMISSION"
-  | "MATCH_FINISHED";
+  | "COMPLETED_SETTLED"
+  | "MATCH_FINISHED"
+  | "CANCELLED_REFUNDED";
 
 export interface ShopLobbyState {
   shopId: string;
@@ -91,17 +114,26 @@ export interface ShopLobbyState {
   pinExpiresAt: string;
   entryFeePaise: number;
   players: ActiveMatchParticipant[];
+  playerCount: number;
+  currentPrizePoolPaise: number;
+  secondsRemaining: number;
+  lobbyClosesAt: string | null;
   currentQuestionIndex: number;
   totalQuestions: number;
-  countdownSeconds: number;
   activeQuestion?: SanitizedQuestion;
-  startedAt?: number;
-  endedAt?: number;
+  pot: PotBreakdown;
+  refundInfo?: {
+    reason: string;
+    refundedAmountPaise: number;
+    participantsRefunded: number;
+  };
   winner?: {
     playerId: string;
     displayName: string;
     score: number;
+    cumulativeResponseMs: number;
     prizePaise: number;
+    upiId?: string;
+    payoutId?: string;
   };
-  pot: PotBreakdown;
 }

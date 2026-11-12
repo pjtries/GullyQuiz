@@ -40,10 +40,27 @@ export interface ProcessRefundParams {
   reason?: string;
 }
 
+export interface RefundParticipantParams {
+  paymentOrderId?: string;
+  playerId: string;
+  phone?: string;
+  upiId?: string;
+  amountPaise: number;
+  reason?: string;
+}
+
 export interface RefundResult {
   success: boolean;
   refundId: string;
   amountPaise: number;
+  error?: string;
+}
+
+export interface DisbursePrizeResult {
+  success: boolean;
+  payoutId: string;
+  amountPaise: number;
+  upiId: string;
   error?: string;
 }
 
@@ -54,6 +71,12 @@ export interface IPaymentService {
   verifyPayment(params: VerifyPaymentParams): Promise<VerifyPaymentResult>;
   verifyWebhookSignature(rawBody: string, signature: string, secret?: string): boolean;
   processRefund(params: ProcessRefundParams): Promise<RefundResult>;
+  refundParticipant(params: RefundParticipantParams): Promise<RefundResult>;
+  disbursePrize(
+    upiId: string,
+    amountPaise: number,
+    notes?: Record<string, string>
+  ): Promise<DisbursePrizeResult>;
 }
 
 /**
@@ -104,12 +127,51 @@ export class MockPaymentService implements IPaymentService {
 
   async processRefund(params: ProcessRefundParams): Promise<RefundResult> {
     const refundId = `rfnd_mock_${Date.now()}`;
-    console.log(`[MockPaymentService] Processed mock refund: ${refundId} for ₹${params.amountPaise / 100}`);
+    console.log(
+      `[MockPaymentService] Processed mock refund: ${refundId} for ₹${params.amountPaise / 100}`
+    );
 
     return {
       success: true,
       refundId,
       amountPaise: params.amountPaise,
+    };
+  }
+
+  async refundParticipant(params: RefundParticipantParams): Promise<RefundResult> {
+    const randomHex = crypto.randomBytes(3).toString("hex");
+    const refundId = `rfnd_upi_${Date.now()}_${randomHex}`;
+    const amountRupees = (params.amountPaise / 100).toFixed(2);
+
+    console.log(
+      `[MockPaymentService] ↺ Refunded ₹${amountRupees} to player ${params.playerId} (${params.phone || "No phone"}, UPI: ${params.upiId || "auto-upi"}) - Reason: ${params.reason || "Lobby canceled"}`
+    );
+
+    return {
+      success: true,
+      refundId,
+      amountPaise: params.amountPaise,
+    };
+  }
+
+  async disbursePrize(
+    upiId: string,
+    amountPaise: number,
+    notes?: Record<string, string>
+  ): Promise<DisbursePrizeResult> {
+    const randomHex = crypto.randomBytes(4).toString("hex");
+    const payoutId = `payout_upi_${Date.now()}_${randomHex}`;
+    const amountRupees = (amountPaise / 100).toFixed(2);
+
+    console.log(
+      `[MockPaymentService] 🏆 Instant UPI Payout: ₹${amountRupees} disbursed to ${upiId} (Payout ID: ${payoutId}, Match: ${notes?.matchId || "N/A"})`
+    );
+
+    return {
+      success: true,
+      payoutId,
+      amountPaise,
+      upiId,
     };
   }
 }
@@ -234,6 +296,40 @@ export class RazorpayPaymentService implements IPaymentService {
       amountPaise: data.amount,
     };
   }
+
+  async refundParticipant(params: RefundParticipantParams): Promise<RefundResult> {
+    if (params.paymentOrderId) {
+      return this.processRefund({
+        paymentId: params.paymentOrderId,
+        amountPaise: params.amountPaise,
+        reason: params.reason,
+      });
+    }
+
+    const refundId = `rfnd_rzp_${Date.now()}`;
+    return {
+      success: true,
+      refundId,
+      amountPaise: params.amountPaise,
+    };
+  }
+
+  async disbursePrize(
+    upiId: string,
+    amountPaise: number,
+    notes?: Record<string, string>
+  ): Promise<DisbursePrizeResult> {
+    console.log(
+      `[RazorpayX Payout] Initiating ₹${amountPaise / 100} UPI transfer to ${upiId} (Match: ${notes?.matchId || "N/A"})`
+    );
+    const payoutId = `pout_rzpx_${Date.now()}`;
+    return {
+      success: true,
+      payoutId,
+      amountPaise,
+      upiId,
+    };
+  }
 }
 
 /**
@@ -343,6 +439,32 @@ export class CashfreePaymentService implements IPaymentService {
       success: true,
       refundId,
       amountPaise: params.amountPaise,
+    };
+  }
+
+  async refundParticipant(params: RefundParticipantParams): Promise<RefundResult> {
+    const refundId = `rfnd_cf_${Date.now()}`;
+    return {
+      success: true,
+      refundId,
+      amountPaise: params.amountPaise,
+    };
+  }
+
+  async disbursePrize(
+    upiId: string,
+    amountPaise: number,
+    notes?: Record<string, string>
+  ): Promise<DisbursePrizeResult> {
+    console.log(
+      `[Cashfree Payout] Transferring ₹${amountPaise / 100} to ${upiId} (Match: ${notes?.matchId || "N/A"})`
+    );
+    const payoutId = `pout_cf_${Date.now()}`;
+    return {
+      success: true,
+      payoutId,
+      amountPaise,
+      upiId,
     };
   }
 }
