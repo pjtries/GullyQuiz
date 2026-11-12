@@ -77,6 +77,11 @@ export interface IPaymentService {
     amountPaise: number,
     notes?: Record<string, string>
   ): Promise<DisbursePrizeResult>;
+  disburseVendorCommission(
+    upiId: string,
+    amountPaise: number,
+    notes?: Record<string, string>
+  ): Promise<DisbursePrizeResult>;
 }
 
 /**
@@ -165,6 +170,27 @@ export class MockPaymentService implements IPaymentService {
 
     console.log(
       `[MockPaymentService] 🏆 Instant UPI Payout: ₹${amountRupees} disbursed to ${upiId} (Payout ID: ${payoutId}, Match: ${notes?.matchId || "N/A"})`
+    );
+
+    return {
+      success: true,
+      payoutId,
+      amountPaise,
+      upiId,
+    };
+  }
+
+  async disburseVendorCommission(
+    upiId: string,
+    amountPaise: number,
+    notes?: Record<string, string>
+  ): Promise<DisbursePrizeResult> {
+    const randomHex = crypto.randomBytes(4).toString("hex");
+    const payoutId = `pout_vendor_${Date.now()}_${randomHex}`;
+    const amountRupees = (amountPaise / 100).toFixed(2);
+
+    console.log(
+      `[MockPaymentService] 🏪 Vendor Settlement: ₹${amountRupees} disbursed to vendor UPI: ${upiId} (Payout ID: ${payoutId}, Stall: ${notes?.shopCode || "N/A"})`
     );
 
     return {
@@ -330,6 +356,27 @@ export class RazorpayPaymentService implements IPaymentService {
       upiId,
     };
   }
+
+  async disburseVendorCommission(
+    upiId: string,
+    amountPaise: number,
+    notes?: Record<string, string>
+  ): Promise<DisbursePrizeResult> {
+    const randomHex = crypto.randomBytes(4).toString("hex");
+    const payoutId = `pout_vendor_${Date.now()}_${randomHex}`;
+    const amountRupees = (amountPaise / 100).toFixed(2);
+
+    console.log(
+      `[MockPaymentService] 🏪 Vendor Settlement: ₹${amountRupees} disbursed to vendor UPI: ${upiId} (Payout ID: ${payoutId}, Stall: ${notes?.shopCode || "N/A"})`
+    );
+
+    return {
+      success: true,
+      payoutId,
+      amountPaise,
+      upiId,
+    };
+  }
 }
 
 /**
@@ -460,6 +507,27 @@ export class CashfreePaymentService implements IPaymentService {
       `[Cashfree Payout] Transferring ₹${amountPaise / 100} to ${upiId} (Match: ${notes?.matchId || "N/A"})`
     );
     const payoutId = `pout_cf_${Date.now()}`;
+    return {
+      success: true,
+      payoutId,
+      amountPaise,
+      upiId,
+    };
+  }
+
+  async disburseVendorCommission(
+    upiId: string,
+    amountPaise: number,
+    notes?: Record<string, string>
+  ): Promise<DisbursePrizeResult> {
+    const randomHex = crypto.randomBytes(4).toString("hex");
+    const payoutId = `pout_vendor_${Date.now()}_${randomHex}`;
+    const amountRupees = (amountPaise / 100).toFixed(2);
+
+    console.log(
+      `[MockPaymentService] 🏪 Vendor Settlement: ₹${amountRupees} disbursed to vendor UPI: ${upiId} (Payout ID: ${payoutId}, Stall: ${notes?.shopCode || "N/A"})`
+    );
+
     return {
       success: true,
       payoutId,

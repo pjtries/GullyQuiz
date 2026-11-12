@@ -2,6 +2,7 @@ import { createServer } from "http";
 import { parse } from "url";
 import next from "next";
 import { initSocketServer } from "./src/server/socket";
+import { initBackgroundSchedulers } from "./src/server/jobs/scheduler";
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = process.env.HOSTNAME || "0.0.0.0";
@@ -27,6 +28,9 @@ async function bootstrap() {
 
     // Initialize Socket.io on the same HTTP server port
     initSocketServer(httpServer);
+
+    // Initialize automated background schedulers (PIN rotation & Sunday settlements)
+    initBackgroundSchedulers();
 
     httpServer.listen(port, () => {
       console.log(`> GullyQuiz QR Server ready on http://${hostname}:${port}`);

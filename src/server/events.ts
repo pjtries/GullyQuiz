@@ -13,6 +13,7 @@ export interface ClientToServerEvents {
     displayName: string;
     upiId?: string;
     paymentOrderId?: string;
+    lobbyDurationSeconds?: number;
   }) => void;
 
   "quiz:submit_answer": (payload: {

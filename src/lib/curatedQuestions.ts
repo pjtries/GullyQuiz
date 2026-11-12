@@ -4,15 +4,21 @@ export interface FallbackQuestion {
   questionText: string;
   options: string[];
   correctOptionIndex: number;
+  isActive: boolean;
+  createdAt?: string;
 }
 
-export const CURATED_QUESTIONS: FallbackQuestion[] = [
+const defaultCreatedAt = new Date().toISOString();
+
+const INITIAL_CURATED_QUESTIONS: FallbackQuestion[] = [
   {
     id: "q-01",
     category: "GENERAL_KNOWLEDGE",
     questionText: "Which Indian spacecraft successfully made a soft landing near the south pole of the Moon in August 2023?",
     options: ["Chandrayaan-1", "Chandrayaan-2", "Chandrayaan-3", "Mangalyaan-2"],
     correctOptionIndex: 2,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-02",
@@ -20,6 +26,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "What is the official currency denomination stored in 1 Indian Rupee?",
     options: ["10 Paise", "50 Paise", "100 Paise", "1000 Paise"],
     correctOptionIndex: 2,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-03",
@@ -27,6 +35,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "Who is celebrated as the 'Father of the Indian Constitution'?",
     options: ["Mahatma Gandhi", "Dr. B. R. Ambedkar", "Jawaharlal Nehru", "Sardar Vallabhbhai Patel"],
     correctOptionIndex: 1,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-04",
@@ -34,6 +44,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "Which is the longest river flowing primarily within India?",
     options: ["Ganga", "Yamuna", "Godavari", "Brahmaputra"],
     correctOptionIndex: 0,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-05",
@@ -41,6 +53,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "How many player positions make up a standard cricket team on the field?",
     options: ["9", "10", "11", "12"],
     correctOptionIndex: 2,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-06",
@@ -48,6 +62,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "Which planet in our solar system is popularly known as the 'Red Planet'?",
     options: ["Venus", "Mars", "Jupiter", "Saturn"],
     correctOptionIndex: 1,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-07",
@@ -55,6 +71,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "In which year did India win its first Cricket World Cup under Kapil Dev's captaincy?",
     options: ["1975", "1979", "1983", "1987"],
     correctOptionIndex: 2,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-08",
@@ -62,6 +80,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "What is the capital city of Australia?",
     options: ["Sydney", "Melbourne", "Canberra", "Brisbane"],
     correctOptionIndex: 2,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-09",
@@ -69,6 +89,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "Which Indian state is famously known as the 'Land of Five Rivers'?",
     options: ["Punjab", "Haryana", "Rajasthan", "Uttar Pradesh"],
     correctOptionIndex: 0,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-10",
@@ -76,6 +98,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "What chemical gas do plants primarily absorb from the atmosphere for photosynthesis?",
     options: ["Oxygen", "Carbon Dioxide", "Nitrogen", "Methane"],
     correctOptionIndex: 1,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-11",
@@ -83,6 +107,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "Who wrote the Indian national anthem 'Jana Gana Mana'?",
     options: ["Bankim Chandra Chatterjee", "Rabindranath Tagore", "Sarojini Naidu", "Subhash Chandra Bose"],
     correctOptionIndex: 1,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-12",
@@ -90,6 +116,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "Which organ in the human body is responsible for pumping blood?",
     options: ["Brain", "Lungs", "Heart", "Liver"],
     correctOptionIndex: 2,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-13",
@@ -97,6 +125,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "Where is ISRO's primary satellite launch centre, Satish Dhawan Space Centre, located?",
     options: ["Thiruvananthapuram", "Sriharikota", "Bengaluru", "Chandipur"],
     correctOptionIndex: 1,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-14",
@@ -104,6 +134,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "What does the abbreviation 'UPI' stand for in Indian digital payments?",
     options: ["Unified Payments Interface", "Universal Personal Identity", "United Payment Infrastructure", "Unique Public Interface"],
     correctOptionIndex: 0,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-15",
@@ -111,6 +143,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "Which metal is the best conductor of electricity at room temperature?",
     options: ["Copper", "Gold", "Silver", "Aluminium"],
     correctOptionIndex: 2,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-16",
@@ -118,6 +152,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "What is the highest mountain peak located in India?",
     options: ["Mount Everest", "Kangchenjunga", "Nanda Devi", "K2"],
     correctOptionIndex: 1,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-17",
@@ -125,6 +161,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "Who won India's first Olympic individual gold medal in athletics in 2021?",
     options: ["Abhinav Bindra", "Neeraj Chopra", "Milkha Singh", "P. T. Usha"],
     correctOptionIndex: 1,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-18",
@@ -132,6 +170,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "Which gas makes up approximately 78% of Earth's atmosphere?",
     options: ["Oxygen", "Carbon Dioxide", "Argon", "Nitrogen"],
     correctOptionIndex: 3,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-19",
@@ -139,6 +179,8 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "What does 'QR' in QR code stand for?",
     options: ["Quick Response", "Quantum Reader", "Quality Record", "Queue Route"],
     correctOptionIndex: 0,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "q-20",
@@ -146,5 +188,107 @@ export const CURATED_QUESTIONS: FallbackQuestion[] = [
     questionText: "Which Indian scientist won the Nobel Prize in Physics in 1930 for the scattering of light?",
     options: ["Homi J. Bhabha", "C. V. Raman", "Jagadish Chandra Bose", "Satyendra Nath Bose"],
     correctOptionIndex: 1,
+    isActive: true,
+    createdAt: defaultCreatedAt,
+  },
+  {
+    id: "q-21",
+    category: "GENERAL_KNOWLEDGE",
+    questionText: "Which is the national aquatic animal of India?",
+    options: ["Ganges River Dolphin", "Blue Whale", "Gharial", "Olive Ridley Sea Turtle"],
+    correctOptionIndex: 0,
+    isActive: true,
+    createdAt: defaultCreatedAt,
+  },
+  {
+    id: "q-22",
+    category: "GENERAL_KNOWLEDGE",
+    questionText: "Which classical dance form originated in the state of Kerala?",
+    options: ["Bharatanatyam", "Kathakali", "Kathak", "Kuchipudi"],
+    correctOptionIndex: 1,
+    isActive: true,
+    createdAt: defaultCreatedAt,
+  },
+  {
+    id: "q-23",
+    category: "GENERAL_KNOWLEDGE",
+    questionText: "Which country is the largest coffee producer in the world?",
+    options: ["Colombia", "Vietnam", "Brazil", "India"],
+    correctOptionIndex: 2,
+    isActive: true,
+    createdAt: defaultCreatedAt,
+  },
+  {
+    id: "q-24",
+    category: "GENERAL_KNOWLEDGE",
+    questionText: "In which Indian city is the historic Charminar located?",
+    options: ["Hyderabad", "Lucknow", "Delhi", "Agra"],
+    correctOptionIndex: 0,
+    isActive: true,
+    createdAt: defaultCreatedAt,
+  },
+  {
+    id: "q-25",
+    category: "GENERAL_KNOWLEDGE",
+    questionText: "What is the boiling point of pure water at standard sea-level atmospheric pressure?",
+    options: ["90°C", "95°C", "100°C", "110°C"],
+    correctOptionIndex: 2,
+    isActive: true,
+    createdAt: defaultCreatedAt,
+  },
+  {
+    id: "q-26",
+    category: "GENERAL_KNOWLEDGE",
+    questionText: "Which is the smallest continent by land area on Earth?",
+    options: ["Europe", "Antarctica", "South America", "Australia"],
+    correctOptionIndex: 3,
+    isActive: true,
+    createdAt: defaultCreatedAt,
+  },
+  {
+    id: "q-27",
+    category: "GENERAL_KNOWLEDGE",
+    questionText: "How many spokes are there in the Ashoka Chakra on the Indian National Flag?",
+    options: ["20", "22", "24", "26"],
+    correctOptionIndex: 2,
+    isActive: true,
+    createdAt: defaultCreatedAt,
+  },
+  {
+    id: "q-28",
+    category: "GENERAL_KNOWLEDGE",
+    questionText: "Which vitamin is synthesized in the human skin when exposed to sunlight?",
+    options: ["Vitamin A", "Vitamin B12", "Vitamin C", "Vitamin D"],
+    correctOptionIndex: 3,
+    isActive: true,
+    createdAt: defaultCreatedAt,
+  },
+  {
+    id: "q-29",
+    category: "GENERAL_KNOWLEDGE",
+    questionText: "Which ocean is the largest and deepest ocean on Earth?",
+    options: ["Atlantic Ocean", "Indian Ocean", "Pacific Ocean", "Arctic Ocean"],
+    correctOptionIndex: 2,
+    isActive: true,
+    createdAt: defaultCreatedAt,
+  },
+  {
+    id: "q-30",
+    category: "GENERAL_KNOWLEDGE",
+    questionText: "Who is known as the 'Missile Man of India'?",
+    options: ["Dr. A. P. J. Abdul Kalam", "Vikram Sarabhai", "K. Sivan", "Satish Dhawan"],
+    correctOptionIndex: 0,
+    isActive: true,
+    createdAt: defaultCreatedAt,
   },
 ];
+
+const globalForQuestions = globalThis as unknown as {
+  __gullyQuizQuestions?: FallbackQuestion[];
+};
+
+if (!globalForQuestions.__gullyQuizQuestions) {
+  globalForQuestions.__gullyQuizQuestions = INITIAL_CURATED_QUESTIONS;
+}
+
+export const CURATED_QUESTIONS: FallbackQuestion[] = globalForQuestions.__gullyQuizQuestions;

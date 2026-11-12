@@ -1,7 +1,8 @@
 import { Server, Socket } from "socket.io";
 import prisma from "../lib/prisma";
-import { getPilotShopFallback } from "../lib/pilotShops";
+import { PILOT_SHOPS, getPilotShopFallback } from "../lib/pilotShops";
 import { CURATED_QUESTIONS } from "../lib/curatedQuestions";
+import { upsertInMemoryMatch, IN_MEMORY_MATCHES } from "../lib/inMemoryStore";
 import { getPaymentService } from "./services/paymentService";
 import {
   calculatePotBreakdown,
@@ -66,6 +67,7 @@ interface ActiveShopSession {
 export class GameEngine {
   private io: AppServer;
   private sessions: Map<string, ActiveShopSession> = new Map(); // shopCode -> session
+  private pendingSessions: Map<string, Promise<ActiveShopSession | null>> = new Map();
 
   constructor(io: AppServer) {
     this.io = io;
@@ -73,11 +75,30 @@ export class GameEngine {
 
   public async getOrCreateSession(shopCode: string): Promise<ActiveShopSession | null> {
     const cleanShopCode = shopCode.trim().toUpperCase();
+
     const existing = this.sessions.get(cleanShopCode);
     if (existing) {
+      const fallback = getPilotShopFallback(cleanShopCode);
+      if (fallback) {
+        existing.currentPin = fallback.currentPin;
+        existing.pinExpiresAt = new Date(fallback.pinExpiresAt);
+      }
       return existing;
     }
 
+    const inflight = this.pendingSessions.get(cleanShopCode);
+    if (inflight) {
+      return inflight;
+    }
+
+    const createPromise = this.createSessionInternal(cleanShopCode).finally(() => {
+      this.pendingSessions.delete(cleanShopCode);
+    });
+    this.pendingSessions.set(cleanShopCode, createPromise);
+    return createPromise;
+  }
+
+  private async createSessionInternal(cleanShopCode: string): Promise<ActiveShopSession | null> {
     let shop: {
       id: string;
       shopCode: string;
@@ -103,6 +124,13 @@ export class GameEngine {
 
     if (!shop || !shop.isActive) {
       return null;
+    }
+
+    const existingAfterAwait = this.sessions.get(cleanShopCode);
+    if (existingAfterAwait) {
+      existingAfterAwait.currentPin = shop.currentPin;
+      existingAfterAwait.pinExpiresAt = shop.pinExpiresAt;
+      return existingAfterAwait;
     }
 
     // Find or create an open match for this shop
@@ -148,6 +176,54 @@ export class GameEngine {
 
     this.sessions.set(cleanShopCode, session);
     return session;
+  }
+
+  private syncInMemoryLedger(
+    session: ActiveShopSession,
+    status: "LOBBY_OPEN" | "IN_PROGRESS" | "COMPLETED_SETTLED" | "CANCELLED_REFUNDED",
+    extra?: {
+      payoutReferenceId?: string | null;
+      startedAt?: string | null;
+      endedAt?: string | null;
+      refunded?: boolean;
+    }
+  ) {
+    const existing = IN_MEMORY_MATCHES.get(session.matchId);
+    const playersList = Array.from(session.players.values());
+    const pot = calculatePotBreakdown(playersList.length, 1000);
+
+    upsertInMemoryMatch({
+      id: session.matchId,
+      shopId: session.shopId,
+      shopCode: session.shopCode,
+      shopName: session.shopName,
+      status,
+      entryFeePaise: 1000,
+      totalPotPaise: status === "CANCELLED_REFUNDED" ? 0 : pot.totalPotPaise,
+      prizePoolPaise: status === "CANCELLED_REFUNDED" ? 0 : pot.winnerPrizePoolPaise,
+      vendorSharePaise: status === "CANCELLED_REFUNDED" ? 0 : pot.vendorSharePaise,
+      platformSharePaise: status === "CANCELLED_REFUNDED" ? 0 : pot.platformSharePaise,
+      winnerPlayerId: session.winner?.playerId || null,
+      winnerDisplayName: session.winner?.displayName || null,
+      winnerPhone:
+        playersList.find((p) => p.playerId === session.winner?.playerId)?.phone || null,
+      winnerUpiId: session.winner?.upiId || null,
+      payoutReferenceId: extra?.payoutReferenceId ?? session.winner?.payoutId ?? existing?.payoutReferenceId ?? null,
+      lobbyClosesAt: session.lobbyClosesAt ? session.lobbyClosesAt.toISOString() : null,
+      startedAt: extra?.startedAt ?? existing?.startedAt ?? null,
+      endedAt: extra?.endedAt ?? existing?.endedAt ?? null,
+      createdAt: existing?.createdAt || new Date().toISOString(),
+      participants: playersList.map((p) => ({
+        playerId: p.playerId,
+        displayName: p.displayName,
+        phone: p.phone,
+        upiId: p.upiId,
+        paymentOrderId: p.paymentOrderId,
+        paymentStatus: extra?.refunded ? "REFUNDED" : "PAID",
+        score: p.score,
+        cumulativeResponseMs: p.cumulativeResponseMs,
+      })),
+    });
   }
 
   public getLobbySnapshot(session: ActiveShopSession): ShopLobbyState {
@@ -215,9 +291,10 @@ export class GameEngine {
       displayName: string;
       upiId?: string;
       paymentOrderId?: string;
+      lobbyDurationSeconds?: number;
     }
   ) {
-    const { shopCode, pin, phone, displayName, upiId, paymentOrderId } = payload;
+    const { shopCode, pin, phone, displayName, upiId, paymentOrderId, lobbyDurationSeconds } = payload;
     const cleanShopCode = shopCode.trim().toUpperCase();
 
     let shop: {
@@ -380,9 +457,10 @@ export class GameEngine {
     );
 
     // When Player 1 pays and joins: open new Match with 60-second countdown timer
-    if (session.players.size === 1 && session.stage === "WAITING_FOR_PLAYERS") {
-      this.start60SecondLobby(session);
+    if (session.players.size >= 1 && session.stage === "WAITING_FOR_PLAYERS") {
+      this.start60SecondLobby(session, lobbyDurationSeconds);
     } else {
+      this.syncInMemoryLedger(session, "LOBBY_OPEN");
       this.broadcastLobbyState(session);
     }
 
@@ -400,14 +478,19 @@ export class GameEngine {
   /**
    * Starts the 60-second countdown for the matchmaking lobby.
    */
-  public start60SecondLobby(session: ActiveShopSession) {
+  public start60SecondLobby(session: ActiveShopSession, customDurationSeconds?: number) {
     if (session.lobbyTicker) {
       clearInterval(session.lobbyTicker);
     }
 
+    const durationSec =
+      typeof customDurationSeconds === "number" && customDurationSeconds >= 2 && customDurationSeconds <= 60
+        ? Math.floor(customDurationSeconds)
+        : 60;
+
     session.stage = "LOBBY_OPEN";
-    session.secondsRemaining = 60;
-    session.lobbyClosesAt = new Date(Date.now() + 60000);
+    session.secondsRemaining = durationSec;
+    session.lobbyClosesAt = new Date(Date.now() + durationSec * 1000);
 
     // Update match record with lobbyClosesAt
     prisma.match
@@ -420,6 +503,7 @@ export class GameEngine {
       })
       .catch((e) => console.warn("Match lobbyClosesAt update skipped:", e));
 
+    this.syncInMemoryLedger(session, "LOBBY_OPEN");
     this.broadcastLobbyState(session);
 
     session.lobbyTicker = setInterval(async () => {
@@ -504,6 +588,11 @@ export class GameEngine {
       participantsRefunded: participantsList.length,
     };
 
+    this.syncInMemoryLedger(session, "CANCELLED_REFUNDED", {
+      endedAt: new Date().toISOString(),
+      refunded: true,
+    });
+
     // Emit event to inform clients their ₹10 was refunded
     this.io.to(session.shopCode).emit("match:cancelled_refunded", {
       matchId: session.matchId,
@@ -578,12 +667,13 @@ export class GameEngine {
     const pot = calculatePotBreakdown(playerCount, 1000);
 
     // Update match status in DB
+    const startedAtIso = new Date().toISOString();
     try {
       await prisma.match.update({
         where: { id: session.matchId },
         data: {
           status: "IN_PROGRESS",
-          startedAt: new Date(),
+          startedAt: new Date(startedAtIso),
           totalPotPaise: pot.totalPotPaise,
           prizePoolPaise: pot.winnerPrizePoolPaise,
           vendorSharePaise: pot.vendorSharePaise,
@@ -593,6 +683,8 @@ export class GameEngine {
     } catch (e) {
       console.warn("DB match status update skipped:", e);
     }
+
+    this.syncInMemoryLedger(session, "IN_PROGRESS", { startedAt: startedAtIso });
 
     // Select 9 random active questions from PostgreSQL (or curated questions)
     let fetchedQuestions: InternalQuestion[] = [];
@@ -629,8 +721,10 @@ export class GameEngine {
     }
 
     if (fetchedQuestions.length < 9) {
-      // Pick 9 from curated questions
-      const shuffledCurated = [...CURATED_QUESTIONS].sort(() => 0.5 - Math.random()).slice(0, 9);
+      // Pick 9 from active curated questions
+      const activeCurated = CURATED_QUESTIONS.filter((q) => q.isActive !== false);
+      const sourcePool = activeCurated.length >= 9 ? activeCurated : CURATED_QUESTIONS;
+      const shuffledCurated = [...sourcePool].sort(() => 0.5 - Math.random()).slice(0, 9);
       fetchedQuestions = shuffledCurated.map((q) => ({
         id: q.id,
         category: q.category,
@@ -930,8 +1024,17 @@ export class GameEngine {
         });
       });
     } catch (err) {
-      console.warn("[GameEngine] Database transaction settlement error:", err);
+      console.warn("[GameEngine] Database transaction settlement error, updating in-memory shop balance:", err);
+      const fallbackShop = PILOT_SHOPS.find((s) => s.shopCode === session.shopCode);
+      if (fallbackShop) {
+        fallbackShop.unsettledBalancePaise += pot.vendorSharePaise;
+      }
     }
+
+    this.syncInMemoryLedger(session, "COMPLETED_SETTLED", {
+      payoutReferenceId: payoutResult.payoutId,
+      endedAt: new Date().toISOString(),
+    });
 
     // Emit quiz:finished and match_completed
     this.io.to(session.shopCode).emit("quiz:finished", {

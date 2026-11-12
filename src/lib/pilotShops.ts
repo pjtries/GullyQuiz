@@ -9,12 +9,14 @@ export interface PilotShopData {
   pinExpiresAt: string;
   unsettledBalancePaise: number;
   isActive: boolean;
+  createdAt?: string;
 }
 
 // 24 hours expiry from server init
 const defaultPinExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+const defaultCreatedAt = new Date().toISOString();
 
-export const PILOT_SHOPS: PilotShopData[] = [
+const INITIAL_PILOT_SHOPS: PilotShopData[] = [
   {
     id: "shop-001-uuid",
     shopCode: "SHP_001",
@@ -26,6 +28,7 @@ export const PILOT_SHOPS: PilotShopData[] = [
     pinExpiresAt: defaultPinExpiresAt,
     unsettledBalancePaise: 0,
     isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "shop-002-uuid",
@@ -38,6 +41,7 @@ export const PILOT_SHOPS: PilotShopData[] = [
     pinExpiresAt: defaultPinExpiresAt,
     unsettledBalancePaise: 0,
     isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "shop-003-uuid",
@@ -50,6 +54,7 @@ export const PILOT_SHOPS: PilotShopData[] = [
     pinExpiresAt: defaultPinExpiresAt,
     unsettledBalancePaise: 0,
     isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "shop-004-uuid",
@@ -62,6 +67,7 @@ export const PILOT_SHOPS: PilotShopData[] = [
     pinExpiresAt: defaultPinExpiresAt,
     unsettledBalancePaise: 0,
     isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "shop-005-uuid",
@@ -74,6 +80,7 @@ export const PILOT_SHOPS: PilotShopData[] = [
     pinExpiresAt: defaultPinExpiresAt,
     unsettledBalancePaise: 0,
     isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "shop-006-uuid",
@@ -86,6 +93,7 @@ export const PILOT_SHOPS: PilotShopData[] = [
     pinExpiresAt: defaultPinExpiresAt,
     unsettledBalancePaise: 0,
     isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "shop-007-uuid",
@@ -98,6 +106,7 @@ export const PILOT_SHOPS: PilotShopData[] = [
     pinExpiresAt: defaultPinExpiresAt,
     unsettledBalancePaise: 0,
     isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "shop-008-uuid",
@@ -110,6 +119,7 @@ export const PILOT_SHOPS: PilotShopData[] = [
     pinExpiresAt: defaultPinExpiresAt,
     unsettledBalancePaise: 0,
     isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "shop-009-uuid",
@@ -122,6 +132,7 @@ export const PILOT_SHOPS: PilotShopData[] = [
     pinExpiresAt: defaultPinExpiresAt,
     unsettledBalancePaise: 0,
     isActive: true,
+    createdAt: defaultCreatedAt,
   },
   {
     id: "shop-010-uuid",
@@ -134,8 +145,19 @@ export const PILOT_SHOPS: PilotShopData[] = [
     pinExpiresAt: defaultPinExpiresAt,
     unsettledBalancePaise: 0,
     isActive: true,
+    createdAt: defaultCreatedAt,
   },
 ];
+
+const globalForShops = globalThis as unknown as {
+  __gullyQuizShops?: PilotShopData[];
+};
+
+if (!globalForShops.__gullyQuizShops) {
+  globalForShops.__gullyQuizShops = INITIAL_PILOT_SHOPS;
+}
+
+export const PILOT_SHOPS: PilotShopData[] = globalForShops.__gullyQuizShops;
 
 export function getPilotShopFallback(shopCode: string): PilotShopData | null {
   const normalized = shopCode.trim().toUpperCase();

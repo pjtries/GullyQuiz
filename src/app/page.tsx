@@ -346,6 +346,12 @@ export default function GullyQuizPage() {
             >
               Shop
             </button>
+            <Link
+              href="/admin"
+              className="px-2.5 py-1 text-xs font-semibold rounded-md text-amber-400 hover:text-amber-300 transition"
+            >
+              Admin
+            </Link>
           </div>
 
           <div
@@ -560,11 +566,11 @@ export default function GullyQuizPage() {
                   </div>
                   <div className="flex justify-between text-amber-400">
                     <span>Shopkeeper Commission:</span>
-                    <span className="font-bold">20% of Pot</span>
+                    <span className="font-bold">10% of Pot</span>
                   </div>
                   <div className="flex justify-between text-slate-500">
                     <span>Platform Infrastructure:</span>
-                    <span className="font-bold">10%</span>
+                    <span className="font-bold">20%</span>
                   </div>
                 </div>
 
