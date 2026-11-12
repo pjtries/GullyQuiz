@@ -1,0 +1,137 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MatchStatus {
+  LOBBY_OPEN
+  IN_PROGRESS
+  COMPLETED_SETTLED
+  CANCELLED_REFUNDED
+}
+
+enum PaymentStatus {
+  PAID
+  REFUNDED
+}
+
+enum PayoutStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+model Shop {
+  id                   String         @id @default(uuid())
+  shopCode             String         @unique // e.g. "SHP_001"
+  name                 String
+  ownerName            String
+  ownerPhone           String
+  ownerUpiId           String
+  currentPin           String // 4-digit string
+  pinExpiresAt         DateTime
+  unsettledBalancePaise Int           @default(0)
+  isActive             Boolean        @default(true)
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  matches              Match[]
+  payouts              VendorPayout[]
+
+  @@index([shopCode])
+  @@index([isActive])
+}
+
+model Player {
+  id                 String             @id @default(uuid())
+  phone              String             @unique
+  displayName        String
+  upiId              String?
+  totalMatches       Int                @default(0)
+  totalWinningsPaise Int                @default(0)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  participations     MatchParticipant[]
+  wonMatches         Match[]            @relation("WinnerMatches")
+
+  @@index([phone])
+}
+
+model Question {
+  id                 String   @id @default(uuid())
+  category           String   @default("GENERAL_KNOWLEDGE")
+  questionText       String
+  options            Json     // JSON array of 4 strings e.g. ["A", "B", "C", "D"]
+  correctOptionIndex Int      // 0–3
+  isActive           Boolean  @default(true)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([category])
+  @@index([isActive])
+}
+
+model Match {
+  id                String             @id @default(uuid())
+  shopId            String
+  status            MatchStatus        @default(LOBBY_OPEN)
+  entryFeePaise     Int                @default(1000) // 1000 paise = ₹10.00
+  totalPotPaise     Int                @default(0)
+  prizePoolPaise    Int                @default(0)
+  vendorSharePaise  Int                @default(0)
+  platformSharePaise Int               @default(0)
+  winnerPlayerId    String?
+  payoutReferenceId String?
+  lobbyClosesAt     DateTime?
+  startedAt         DateTime?
+  endedAt           DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  shop              Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  winner            Player?            @relation("WinnerMatches", fields: [winnerPlayerId], references: [id], onDelete: SetNull)
+  participants      MatchParticipant[]
+
+  @@index([shopId])
+  @@index([status])
+}
+
+model MatchParticipant {
+  matchId              String
+  playerId             String
+  paymentOrderId       String?
+  paymentStatus        PaymentStatus @default(PAID)
+  score                Int           @default(0)
+  cumulativeResponseMs Int           @default(0)
+  joinedAt             DateTime      @default(now())
+
+  match                Match         @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  player               Player        @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@id([matchId, playerId])
+  @@index([matchId])
+  @@index([playerId])
+}
+
+model VendorPayout {
+  id                String       @id @default(uuid())
+  shopId            String
+  amountPaise       Int
+  payoutReferenceId String?
+  status            PayoutStatus @default(PENDING)
+  settledAt         DateTime?
+  createdAt         DateTime     @default(now())
+
+  shop              Shop         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId])
+  @@index([status])
+}
