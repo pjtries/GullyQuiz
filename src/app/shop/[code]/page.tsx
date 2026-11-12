@@ -10,7 +10,7 @@ export default function ShopRedirectPage() {
   useEffect(() => {
     const code = params?.code as string;
     if (code) {
-      router.replace(`/?shopCode=${encodeURIComponent(code)}`);
+      router.replace(`/play/${encodeURIComponent(code)}`);
     } else {
       router.replace("/");
     }

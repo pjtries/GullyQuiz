@@ -90,9 +90,17 @@ export default function VendorDisplayPage() {
             </div>
 
             {/* Simulated Physical QR Code Box */}
-            <div className="p-4 bg-white rounded-3xl shadow-xl">
+            <Link
+              href={`/play/${currentShop.shopCode}`}
+              target="_blank"
+              title="Click to simulate customer scanning this QR code"
+              className="p-4 bg-white rounded-3xl shadow-xl hover:scale-105 transition cursor-pointer group flex flex-col items-center"
+            >
               <QrCode className="w-48 h-48 text-slate-950" />
-            </div>
+              <span className="text-[10px] text-slate-600 font-bold mt-1 group-hover:text-brand-600">
+                Click to Test Scan ↗
+              </span>
+            </Link>
 
             {/* 4-digit PIN */}
             <div className="w-full space-y-1">

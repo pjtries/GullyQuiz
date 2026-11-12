@@ -1,5 +1,7 @@
 import { Server, Socket } from "socket.io";
 import prisma from "../lib/prisma";
+import { getPilotShopFallback } from "../lib/pilotShops";
+import { CURATED_QUESTIONS } from "../lib/curatedQuestions";
 import {
   calculatePotBreakdown,
   ActiveMatchParticipant,
@@ -52,36 +54,62 @@ export class GameEngine {
   }
 
   public async getOrCreateSession(shopCode: string): Promise<ActiveShopSession | null> {
-    const existing = this.sessions.get(shopCode);
+    const cleanShopCode = shopCode.trim().toUpperCase();
+    const existing = this.sessions.get(cleanShopCode);
     if (existing) {
       return existing;
     }
 
-    const shop = await prisma.shop.findUnique({
-      where: { shopCode },
-    });
+    let shop: {
+      id: string;
+      shopCode: string;
+      name: string;
+      currentPin: string;
+      pinExpiresAt: Date;
+      isActive: boolean;
+    } | null = null;
+
+    try {
+      shop = await prisma.shop.findUnique({
+        where: { shopCode: cleanShopCode },
+      });
+    } catch {
+      const fallback = getPilotShopFallback(cleanShopCode);
+      if (fallback) {
+        shop = {
+          ...fallback,
+          pinExpiresAt: new Date(fallback.pinExpiresAt),
+        };
+      }
+    }
 
     if (!shop || !shop.isActive) {
       return null;
     }
 
     // Find or create an open match for this shop
-    let activeMatch = await prisma.match.findFirst({
-      where: {
-        shopId: shop.id,
-        status: "LOBBY_OPEN",
-      },
-      orderBy: { createdAt: "desc" },
-    });
-
-    if (!activeMatch) {
-      activeMatch = await prisma.match.create({
-        data: {
+    let activeMatchId = `match_${cleanShopCode}_${Date.now()}`;
+    try {
+      let activeMatch = await prisma.match.findFirst({
+        where: {
           shopId: shop.id,
           status: "LOBBY_OPEN",
-          entryFeePaise: 1000, // ₹10.00
         },
+        orderBy: { createdAt: "desc" },
       });
+
+      if (!activeMatch) {
+        activeMatch = await prisma.match.create({
+          data: {
+            shopId: shop.id,
+            status: "LOBBY_OPEN",
+            entryFeePaise: 1000, // ₹10.00
+          },
+        });
+      }
+      activeMatchId = activeMatch.id;
+    } catch (e) {
+      console.warn("DB match find/create skipped, using activeMatchId:", e);
     }
 
     const session: ActiveShopSession = {
@@ -90,7 +118,7 @@ export class GameEngine {
       shopName: shop.name,
       currentPin: shop.currentPin,
       pinExpiresAt: shop.pinExpiresAt,
-      matchId: activeMatch.id,
+      matchId: activeMatchId,
       stage: "WAITING_FOR_PLAYERS",
       players: new Map(),
       questions: [],
@@ -99,7 +127,7 @@ export class GameEngine {
       countdownSeconds: 0,
     };
 
-    this.sessions.set(shopCode, session);
+    this.sessions.set(cleanShopCode, session);
     return session;
   }
 
@@ -150,10 +178,27 @@ export class GameEngine {
     payload: { shopCode: string; pin: string; phone: string; displayName: string }
   ) {
     const { shopCode, pin, phone, displayName } = payload;
+    const cleanShopCode = shopCode.trim().toUpperCase();
 
-    const shop = await prisma.shop.findUnique({
-      where: { shopCode },
-    });
+    let shop: {
+      id: string;
+      shopCode: string;
+      name: string;
+      currentPin: string;
+      pinExpiresAt: Date;
+      isActive: boolean;
+    } | null = null;
+
+    try {
+      shop = await prisma.shop.findUnique({
+        where: { shopCode: cleanShopCode },
+      });
+    } catch {
+      const fallback = getPilotShopFallback(cleanShopCode);
+      if (fallback) {
+        shop = { ...fallback, pinExpiresAt: new Date(fallback.pinExpiresAt) };
+      }
+    }
 
     if (!shop || !shop.isActive) {
       socket.emit("error_message", {
@@ -181,18 +226,33 @@ export class GameEngine {
     }
 
     // Find or create Player in DB
-    const player = await prisma.player.upsert({
-      where: { phone },
-      update: { displayName },
-      create: {
-        phone,
-        displayName: displayName || "GullyPlayer",
-        totalMatches: 0,
-        totalWinningsPaise: 0,
-      },
-    });
+    let player = {
+      id: `player_${phone.replace(/\D/g, "")}`,
+      displayName: displayName || "GullyPlayer",
+      phone,
+    };
 
-    const session = await this.getOrCreateSession(shopCode);
+    try {
+      const dbPlayer = await prisma.player.upsert({
+        where: { phone },
+        update: { displayName },
+        create: {
+          phone,
+          displayName: displayName || "GullyPlayer",
+          totalMatches: 0,
+          totalWinningsPaise: 0,
+        },
+      });
+      player = {
+        id: dbPlayer.id,
+        displayName: dbPlayer.displayName,
+        phone: dbPlayer.phone,
+      };
+    } catch (e) {
+      console.warn("DB player upsert skipped:", e);
+    }
+
+    const session = await this.getOrCreateSession(cleanShopCode);
     if (!session) {
       socket.emit("error_message", {
         code: "SESSION_ERROR",
@@ -210,10 +270,10 @@ export class GameEngine {
     }
 
     // Join Socket.io room
-    socket.join(shopCode);
+    socket.join(cleanShopCode);
     socket.data.playerId = player.id;
     socket.data.displayName = player.displayName;
-    socket.data.shopCode = shopCode;
+    socket.data.shopCode = cleanShopCode;
 
     // Register participant
     const participant: ActiveMatchParticipant = {
@@ -229,25 +289,29 @@ export class GameEngine {
     session.players.set(socket.id, participant);
 
     // Save participation in DB
-    await prisma.matchParticipant.upsert({
-      where: {
-        matchId_playerId: {
+    try {
+      await prisma.matchParticipant.upsert({
+        where: {
+          matchId_playerId: {
+            matchId: session.matchId,
+            playerId: player.id,
+          },
+        },
+        update: {
+          paymentStatus: "PAID",
+        },
+        create: {
           matchId: session.matchId,
           playerId: player.id,
+          paymentStatus: "PAID",
         },
-      },
-      update: {
-        paymentStatus: "PAID",
-      },
-      create: {
-        matchId: session.matchId,
-        playerId: player.id,
-        paymentStatus: "PAID",
-      },
-    });
+      });
+    } catch (e) {
+      console.warn("DB participant upsert skipped:", e);
+    }
 
     console.log(
-      `[GameEngine] Player "${player.displayName}" joined lobby for shop ${shopCode}. Total: ${session.players.size}`
+      `[GameEngine] Player "${player.displayName}" joined lobby for shop ${cleanShopCode}. Total: ${session.players.size}`
     );
 
     this.broadcastLobbyState(session);
@@ -296,47 +360,67 @@ export class GameEngine {
     const playerCount = session.players.size;
     const pot = calculatePotBreakdown(playerCount, 1000);
 
-    await prisma.match.update({
-      where: { id: session.matchId },
-      data: {
-        status: "IN_PROGRESS",
-        startedAt: new Date(),
-        totalPotPaise: pot.totalPotPaise,
-        prizePoolPaise: pot.winnerPrizePoolPaise,
-        vendorSharePaise: pot.vendorSharePaise,
-        platformSharePaise: pot.platformSharePaise,
-      },
-    });
+    try {
+      await prisma.match.update({
+        where: { id: session.matchId },
+        data: {
+          status: "IN_PROGRESS",
+          startedAt: new Date(),
+          totalPotPaise: pot.totalPotPaise,
+          prizePoolPaise: pot.winnerPrizePoolPaise,
+          vendorSharePaise: pot.vendorSharePaise,
+          platformSharePaise: pot.platformSharePaise,
+        },
+      });
+    } catch (e) {
+      console.warn("DB match status update skipped:", e);
+    }
 
-    // Fetch 5 random active questions from DB
-    const dbQuestions = await prisma.question.findMany({
-      where: { isActive: true },
-      take: 20,
-    });
+    // Fetch 5 random active questions from DB or fallback
+    let fetchedQuestions: InternalQuestion[] = [];
+    try {
+      const dbQuestions = await prisma.question.findMany({
+        where: { isActive: true },
+        take: 20,
+      });
 
-    // Shuffle and pick 5
-    const shuffled = dbQuestions.sort(() => 0.5 - Math.random()).slice(0, 5);
-
-    session.questions = shuffled.map((q) => {
-      let parsedOptions: string[] = [];
-      if (Array.isArray(q.options)) {
-        parsedOptions = q.options as string[];
-      } else if (typeof q.options === "string") {
-        try {
-          parsedOptions = JSON.parse(q.options);
-        } catch {
-          parsedOptions = ["A", "B", "C", "D"];
-        }
+      if (dbQuestions && dbQuestions.length > 0) {
+        const shuffled = dbQuestions.sort(() => 0.5 - Math.random()).slice(0, 5);
+        fetchedQuestions = shuffled.map((q) => {
+          let parsedOptions: string[] = [];
+          if (Array.isArray(q.options)) {
+            parsedOptions = q.options as string[];
+          } else if (typeof q.options === "string") {
+            try {
+              parsedOptions = JSON.parse(q.options);
+            } catch {
+              parsedOptions = ["A", "B", "C", "D"];
+            }
+          }
+          return {
+            id: q.id,
+            category: q.category,
+            questionText: q.questionText,
+            options: parsedOptions,
+            correctOptionIndex: q.correctOptionIndex,
+          };
+        });
       }
-      return {
+    } catch (e) {
+      console.warn("DB questions fetch skipped, using curated questions:", e);
+    }
+
+    if (fetchedQuestions.length === 0) {
+      fetchedQuestions = CURATED_QUESTIONS.slice(0, 5).map((q) => ({
         id: q.id,
         category: q.category,
         questionText: q.questionText,
-        options: parsedOptions,
+        options: [...q.options],
         correctOptionIndex: q.correctOptionIndex,
-      };
-    });
+      }));
+    }
 
+    session.questions = fetchedQuestions;
     session.currentQuestionIndex = -1;
     this.nextQuestion(session);
   }

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import Link from "next/link";
 import io, { Socket } from "socket.io-client";
 import {
   Trophy,
@@ -413,6 +414,13 @@ export default function GullyQuizPage() {
 
               {/* Form card */}
               <div className="p-4 rounded-2xl bg-gradient-to-b from-[#161f31] to-[#101726] border border-slate-800/80 shadow-xl space-y-3.5">
+                <Link
+                  href={`/play/${shopCode}`}
+                  className="w-full py-2.5 px-3 rounded-xl bg-brand-500/15 hover:bg-brand-500/25 border border-brand-500/30 text-brand-400 font-bold text-xs flex items-center justify-center gap-2 transition"
+                >
+                  <QrCode className="w-4 h-4" /> Open Dedicated QR Experience (/play/{shopCode}) ↗
+                </Link>
+
                 <div>
                   <label className="text-[11px] font-semibold text-slate-300 block mb-1">
                     Select Pilot Stall (or Scan QR):
